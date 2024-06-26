@@ -3,6 +3,7 @@
 #include <cstring>
 #include <vector>
 #include <map>
+#include "empty_list.hpp"
 
 using namespace std;
 
@@ -31,6 +32,14 @@ temp.db: for temp use
 */
 
 uint32_t page_size = 4096;
+
+struct MasterRow
+{
+    char table[200];
+    uint32_t page_num;
+    uint32_t next_page;
+    uint32_t offset;
+};
 
 struct Row
 {
@@ -69,7 +78,7 @@ struct Pager
 
     void close()
     {
-        fstream file("mydb.db", ios::out);
+        fstream file("mydb.db", ios::out|ios::in);
 
         buffer = new char[sizeof(First_page)];
         
@@ -121,11 +130,24 @@ void read_row(uint32_t page_num, uint32_t offset, Row &row, Pager &pager)
     memcpy(&row, pager.pages_list[idx]+offset, sizeof(Row));
 }
 
+
+
+void insert()
+{
+
+}
+
 int main()
 {
     Pager pager;
     pager.init();
 
+    EmptyList empty_list;
+    empty_list.init(pager.first_page.num_pages);
+
+    for (auto &i : empty_list.empty_pages)
+        cout << i << '\n';
+        cout << '\n';
     Row row;
 
     string input;
@@ -136,7 +158,9 @@ int main()
         cin >> input;
 
         if (input == "quit")
+        {
             break;
+        }
 
         if (input == "insert")
         {
@@ -148,7 +172,7 @@ int main()
             row.next_page = 0;
             row.offset = 0;
 
-            write_row(1, 0, row, pager);
+            write_row(2, 0, row, pager);
         }
 
         else if (input == "select")
