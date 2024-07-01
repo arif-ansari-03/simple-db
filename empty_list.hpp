@@ -24,14 +24,31 @@ struct EmptyList
         }
     }
 
-    void make_pages()
+    void make_pages(uint32_t new_pages)
     {
-        cout << "No more pages\n";
+        fstream file("mydb.db", ios::in|ios::out);
+
+        uint32_t offset = num_pages * 4096;
+        char* temp = new char[4096];
+        for (uint32_t i = 0; i < 4096; i++) temp[i] = 0;
+
+        for (uint32_t i = 0; i < new_pages; i++)
+        {
+            file.seekp(offset);
+            file.write(temp, 4096);
+            empty_pages.emplace_back(num_pages+i);
+            offset += 4096;
+        }
+
+        file.close();
+
+        num_pages += new_pages;
+        ins = 1;
     }
 
     uint32_t find_page()
     {
-        if (empty_pages.empty()) make_pages();
+        if (empty_pages.empty()) make_pages(1);
 
         uint32_t page_num = empty_pages.back();
         empty_pages.pop_back();
