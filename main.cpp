@@ -237,8 +237,6 @@ struct First_page
 {
     uint32_t num_pages;
     uint32_t num_tables;
-    uint32_t last_row_page_num;
-    uint32_t last_row_offset;
 };
 
 struct Pager
@@ -254,7 +252,7 @@ struct Pager
         fstream file("mydb.db", ios::in);
         buffer = new char[sizeof(First_page)];
         
-        file.read(buffer, sizeof(buffer));
+        file.read(buffer, sizeof(First_page));
         memcpy(&first_page, buffer, sizeof(First_page));
 
         file.close();
@@ -267,9 +265,9 @@ struct Pager
 
         buffer = new char[sizeof(First_page)];
         
-        memcpy(buffer, &first_page, sizeof(buffer));
+        memcpy(buffer, &first_page, sizeof(First_page));
 
-        file.write(buffer, sizeof(buffer));
+        file.write(buffer, sizeof(First_page));
 
         for (auto &[page_num, page_idx] : pages_index)
         {
@@ -278,7 +276,6 @@ struct Pager
             file.write(pages_list[page_idx], page_size);
             delete pages_list[page_idx];
         }
-
         file.close();
     }
 };
@@ -300,6 +297,11 @@ struct mCursor
         page_num = pg_nm;
         offset = ofst;
         end = 0;
+        if (pager.first_page.num_tables==0)
+        {
+            end = 1;
+            return;
+        }
 
         uint32_t idx;
         if (!pager.pages_index.count(page_num))
@@ -350,7 +352,6 @@ struct mCursor
                 offset = 0;
                 continue;
             }
-
             mrow.read_row(pager.pages_list[idx], offset);
             break;
         }
@@ -388,12 +389,13 @@ void create_table(Pager &pager, EmptyList &empty_list, string s)
 
     uint32_t row_size = mrow.row_size();
 
-    uint32_t page_num, offset;
+    uint32_t page_num = 0, offset = 0;
 
     mCursor iter;
-    iter.init(1, 0, pager);
+    bool init = 0;
+    if (pager.first_page.num_tables>0) {iter.init(1, 0, pager); init = 1;}
 
-    while (1)
+    while (init)
     {
         uint32_t idx = pager.pages_index[iter.page_num];
         uint32_t mem_used;
@@ -404,9 +406,8 @@ void create_table(Pager &pager, EmptyList &empty_list, string s)
         if (4096-mem_used>=mrow.row_size())
         {
             uint32_t pg_no = iter.page_num;
-            while (!iter.end && pg_no == iter.page_num)
+            while (!iter.end)
                 iter.advance(pager);
-            iter.prevOnce(pager);
             page_num = iter.page_num;
             offset = iter.offset;
             break;
@@ -436,15 +437,46 @@ void create_table(Pager &pager, EmptyList &empty_list, string s)
 
     uint32_t idx = pager.pages_index[page_num];
 
-    memcpy(pager.pages_list[idx], &mrow, 56);
-    memcpy(pager.pages_list[idx]+56, mrow.names, mrow.names_size);
-    memcpy(pager.pages_list[idx]+56+mrow.names_size, mrow.types, mrow.types_size);
+    memcpy(pager.pages_list[idx]+offset, &mrow, 56);
+    memcpy(pager.pages_list[idx]+offset+56, mrow.names, mrow.names_size);
+    memcpy(pager.pages_list[idx]+offset+56+mrow.names_size, mrow.types, mrow.types_size);
     uint32_t temp;
     memcpy(&temp, pager.pages_list[idx]+4096-8, 4);
     temp+=row_size;
     memcpy(pager.pages_list[idx]+4096-8, &temp, 4);
-    cout << temp << ' ';
     pager.first_page.num_tables++;
+}
+
+void show_all_tables(Pager &pager)
+{
+    mCursor iter;
+    cout << pager.first_page.num_tables << '\n';
+    if (pager.first_page.num_tables == 0) return;
+
+    iter.init(1, 0, pager);
+    while(iter.end != 1)
+    {
+        cout << iter.mrow.table_name << '\n';
+
+        uint32_t offset = 0;
+        for (uint32_t i = 0; i < iter.mrow.num_col; i++)
+        {
+            uint32_t size;
+            memcpy(&size, iter.mrow.names+offset, 4);
+            offset += 4;
+            cout << iter.mrow.names+offset << ' ';
+            offset += size;
+
+            uint32_t temp;
+            memcpy(&temp, iter.mrow.types+i*5, 1);
+            cout << temp << ' ';
+            memcpy(&temp, iter.mrow.types+i*5+1, 4);
+            cout << temp << '\n';
+        }
+        cout << '\n';
+
+        iter.advance(pager);
+    }
 }
 
 void write_row(uint32_t page_num, uint32_t offset, Row &row, Pager &pager)
@@ -499,25 +531,9 @@ int main()
 
     Row row;
     MasterRow mrow;
-    
-    // create_table(pager, empty_list, "User3 id int username2 varchar 20");
-
-    char* buffer = new char[page_size];
-    fstream file("mydb.db", ios::in);
-
-    // first table at 0, then 86, then 172
-    file.seekp(page_size);
-
-    file.read(buffer, page_size);
-
-
-    cout << mrow.num_col << '\n';
-    file.close();
-
-
 
     string input;
-    while (0)
+    while (1)
     {
         cout << "db >> ";
 
@@ -528,26 +544,41 @@ int main()
             break;
         }
 
-        if (input == "insert")
+        // if (input == "insert")
+        // {
+        //     cin >> row.id;
+        //     string temp;
+        //     cin >> temp;
+        //     strcpy(row.user, temp.c_str());
+
+        //     row.next_page = 0;
+        //     row.offset = 0;
+
+        //     write_row(2, 0, row, pager);
+        // }
+
+        // else if (input == "select")
+        // {
+        //     read_row(1, 0, row, pager);
+        //     cout << row.id << ' ' << row.user << '\n';
+        // }
+
+        if (input == "show")
         {
-            cin >> row.id;
-            string temp;
-            cin >> temp;
-            strcpy(row.user, temp.c_str());
-
-            row.next_page = 0;
-            row.offset = 0;
-
-            write_row(2, 0, row, pager);
+            cin >> input;
+            show_all_tables(pager);
         }
 
-        else if (input == "select")
+        else if (input == "create")
         {
-            read_row(1, 0, row, pager);
-            cout << row.id << ' ' << row.user << '\n';
+            cin >> input; // read "table"
+            string s = "";
+            getline(cin, s);
+            create_table(pager, empty_list, s);
         }
     }
 
+    pager.first_page.num_pages = empty_list.num_pages;
     empty_list.close();
     pager.close();
 }

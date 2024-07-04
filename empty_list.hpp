@@ -10,6 +10,7 @@ struct EmptyList
     uint32_t num_pages;
     bool del = 0;
     bool ins = 0;
+
     void init(uint32_t num_of_pages)
     {
         num_pages = num_of_pages;
@@ -26,18 +27,15 @@ struct EmptyList
 
     void make_pages(uint32_t new_pages)
     {
-        fstream file("mydb.db", ios::in|ios::out);
+        fstream file("mydb.db", ios::in|ios::out|ios::ate);
 
-        uint32_t offset = num_pages * 4096;
         char* temp = new char[4096];
         for (uint32_t i = 0; i < 4096; i++) temp[i] = 0;
 
         for (uint32_t i = 0; i < new_pages; i++)
         {
-            file.seekp(offset);
             file.write(temp, 4096);
             empty_pages.emplace_back(num_pages+i);
-            offset += 4096;
         }
 
         file.close();
