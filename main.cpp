@@ -45,7 +45,7 @@ string to_bits(int a)
     return s;
 }
 
-uint32_t page_size = 4096;
+uint32_t page_size = 400;
 
 struct MasterRow
 {
@@ -115,7 +115,7 @@ struct MasterRow
             strcpy(names+cur_offset, s.c_str());
             cur_offset += 1+s.length();
         }
-
+        cout << names_size << '\n';
         types_size = 5 * num_col;
         types = new char[types_size];
 
@@ -250,10 +250,13 @@ struct Pager
     void init()
     {
         fstream file("mydb.db", ios::in);
+
         buffer = new char[sizeof(First_page)];
         
         file.read(buffer, sizeof(First_page));
         memcpy(&first_page, buffer, sizeof(First_page));
+
+        cout << first_page.num_pages << ' ' << first_page.num_tables << '\n';
 
         file.close();
         delete buffer;
@@ -264,7 +267,6 @@ struct Pager
         fstream file("mydb.db", ios::out|ios::in);
 
         buffer = new char[sizeof(First_page)];
-        
         memcpy(buffer, &first_page, sizeof(First_page));
 
         file.write(buffer, sizeof(First_page));
@@ -346,7 +348,7 @@ struct mCursor
             if (mrow.table_name[0]==0)
             {
                 uint32_t temp;
-                memcpy(&temp, pager.pages_list[idx]+(4096-4), 4);
+                memcpy(&temp, pager.pages_list[idx]+(page_size-4), 4);
                 if (temp == 0) {end = 1; break;}
                 page_num = temp;
                 offset = 0;
@@ -399,11 +401,11 @@ void create_table(Pager &pager, EmptyList &empty_list, string s)
     {
         uint32_t idx = pager.pages_index[iter.page_num];
         uint32_t mem_used;
-        memcpy(&mem_used, pager.pages_list[idx]+(4096-8), 4);
+        memcpy(&mem_used, pager.pages_list[idx]+(page_size-8), 4);
 
         mem_used += 9;
 
-        if (4096-mem_used>=mrow.row_size())
+        if (page_size-mem_used>=mrow.row_size())
         {
             uint32_t pg_no = iter.page_num;
             while (!iter.end)
@@ -422,6 +424,26 @@ void create_table(Pager &pager, EmptyList &empty_list, string s)
     {
         page_num = empty_list.find_page();
         offset = 0;
+        // The current last page says there is no next page, but we just made one.
+        // The following if statement adds the new page given by empty_list to the
+        // current last page.
+        if (init) 
+        {
+            uint32_t idx;
+            if (!pager.pages_index.count(iter.page_num))
+            {
+                fstream file("mydb.db", ios::in);
+                char* buffer = new char[page_size];
+                file.seekg(iter.page_num * page_size);
+                file.read(buffer, page_size);
+                file.close();
+                pager.pages_index[iter.page_num] = pager.pages_list.size();
+                pager.pages_list.emplace_back(buffer);
+                file.close();
+            }
+            idx = pager.pages_index[iter.page_num];
+            memcpy(pager.pages_list[idx]+page_size-4, &page_num, 4);
+        }
     }
 
     if (!pager.pages_index.count(page_num))
@@ -435,15 +457,16 @@ void create_table(Pager &pager, EmptyList &empty_list, string s)
         pager.pages_list.emplace_back(temp);
     }
 
+    cout << page_num << '\n';
     uint32_t idx = pager.pages_index[page_num];
 
     memcpy(pager.pages_list[idx]+offset, &mrow, 56);
     memcpy(pager.pages_list[idx]+offset+56, mrow.names, mrow.names_size);
     memcpy(pager.pages_list[idx]+offset+56+mrow.names_size, mrow.types, mrow.types_size);
     uint32_t temp;
-    memcpy(&temp, pager.pages_list[idx]+4096-8, 4);
+    memcpy(&temp, pager.pages_list[idx]+page_size-8, 4);
     temp+=row_size;
-    memcpy(pager.pages_list[idx]+4096-8, &temp, 4);
+    memcpy(pager.pages_list[idx]+page_size-8, &temp, 4);
     pager.first_page.num_tables++;
 }
 
@@ -527,7 +550,8 @@ int main()
     pager.init();
 
     EmptyList empty_list;
-    empty_list.init(pager.first_page.num_pages);
+    empty_list.init(pager.first_page.num_pages, page_size);
+    
 
     Row row;
     MasterRow mrow;
@@ -577,6 +601,7 @@ int main()
             create_table(pager, empty_list, s);
         }
     }
+
 
     pager.first_page.num_pages = empty_list.num_pages;
     empty_list.close();

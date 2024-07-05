@@ -8,11 +8,13 @@ struct EmptyList
 {
     vector<uint32_t> empty_pages;
     uint32_t num_pages;
+    uint32_t page_size;
     bool del = 0;
     bool ins = 0;
 
-    void init(uint32_t num_of_pages)
+    void init(uint32_t num_of_pages, uint32_t page_sz)
     {
+        page_size = page_sz;
         num_pages = num_of_pages;
         fstream file("el.db", ios::in);
 
@@ -29,12 +31,12 @@ struct EmptyList
     {
         fstream file("mydb.db", ios::in|ios::out|ios::ate);
 
-        char* temp = new char[4096];
-        for (uint32_t i = 0; i < 4096; i++) temp[i] = 0;
+        char* temp = new char[page_size];
+        for (uint32_t i = 0; i < page_size; i++) temp[i] = 0;
 
         for (uint32_t i = 0; i < new_pages; i++)
         {
-            file.write(temp, 4096);
+            file.write(temp, page_size);
             empty_pages.emplace_back(num_pages+i);
         }
 
@@ -49,6 +51,7 @@ struct EmptyList
         if (empty_pages.empty()) make_pages(1);
 
         uint32_t page_num = empty_pages.back();
+        cout << "given page: " << page_num << '\n';
         empty_pages.pop_back();
         del = 1;
 
