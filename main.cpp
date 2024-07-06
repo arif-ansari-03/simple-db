@@ -172,6 +172,20 @@ struct Pager
         delete buffer;
     }
 
+    void checkPage(uint32_t page_num)
+    {
+        if (pages_index.count(page_num)) return;
+        buffer = new char[page_size];
+
+        fstream file("mydb.db", ios::in);
+        file.seekg(page_num * page_size);
+        file.read(buffer, page_size);
+        file.close();
+
+        pages_index[page_num] = pages_list.size();
+        pages_list.emplace_back(page_num);
+    }
+
     void close()
     {
         fstream file("mydb.db", ios::out|ios::in);
@@ -284,19 +298,8 @@ struct mCursor
             return;
         }
 
-        uint32_t idx;
-        if (!pager.pages_index.count(page_num))
-        {
-            char* buffer = new char[page_size];
-            pager.pages_index[page_num] = pager.pages_list.size();
-            fstream file("mydb.db", ios::in);
-            file.seekg(page_num*page_size);
-            file.read(buffer, page_size);
-            file.close();
-            pager.pages_list.emplace_back(buffer);
-        }
-
-        idx = pager.pages_index[page_num];
+        pager.checkPage(page_num);
+        uint32_t idx = pager.pages_index[page_num];
         memcpy(&mrow, pager.pages_list[idx]+offset, 56);
         mrow.read_row(pager.pages_list[idx], offset);
     }
@@ -309,18 +312,8 @@ struct mCursor
         offset += mrow.row_size();
         while (1)
         {
-            uint32_t idx;
-            if (!pager.pages_index.count(page_num))
-            {
-                char* buffer = new char[page_size];
-                pager.pages_index[page_num] = pager.pages_list.size();
-                fstream file("mydb.db", ios::in);
-                file.seekg(page_num*page_size);
-                file.read(buffer, page_size);
-                file.close();
-                pager.pages_list.emplace_back(buffer);
-            }
-            idx = pager.pages_index[page_num];
+            pager.checkPage(page_num);
+            uint32_t idx = pager.pages_index[page_num];
 
             memcpy(&mrow, pager.pages_list[idx]+offset, 56);
 
@@ -345,19 +338,8 @@ struct mCursor
         offset = prev_offset;
         end = 0;
 
-        uint32_t idx;
-        if (!pager.pages_index.count(page_num))
-        {
-            char* buffer = new char[page_size];
-            pager.pages_index[page_num] = pager.pages_list.size();
-            fstream file("mydb.db", ios::in);
-            file.seekg(page_num*page_size);
-            file.read(buffer, page_size);
-            file.close();
-            pager.pages_list.emplace_back(buffer);
-        }
-
-        idx = pager.pages_index[page_num];
+        pager.checkPage(page_num);
+        uint32_t idx = pager.pages_index[page_num];
         memcpy(&mrow, pager.pages_list[idx]+offset, 56);
         mrow.read_row(pager.pages_list[idx], offset);
     }
@@ -369,13 +351,80 @@ struct gCursor
     MasterRow mrow;
     uint32_t page_num;
     uint32_t offset;
+    uint32_t prev_page_num;
+    uint32_t prev_offset;
     bool end;
 
     void init(uint32_t pg_no, uint32_t ofst, MasterRow m_row, Pager &pager)
     {
+        prev_page_num = 0;
+        prev_offset = 0;
         page_num = pg_no;
         offset = ofst;
         mrow = m_row;
+        end = 0;
+
+        if (page_num == 0)
+        {
+            end = 1;
+            return;
+        }
+
+        pager.checkPage(page_num); 
+        uint32_t idx = pager.pages_index[page_num];
+
+        memcpy(&row, pager.pages_list[idx]+offset, 4);
+        row.data = new char[row.row_size];
+        memcpy(row.data, pager.pages_list[idx]+offset+4, row.row_size);
+    }
+
+    void advance(Pager &pager)
+    {
+        prev_page_num = page_num;
+        prev_offset = offset;
+
+        while(1)
+        {
+            offset += row.row_size;
+            offset += 4;
+
+            delete row.data;
+
+            pager.checkPage(page_num);
+            uint32_t idx = pager.pages_index[page_num];
+
+            memcpy(&row, pager.pages_list[idx]+offset, 4);
+
+            if (row.row_size == 0)
+            {
+                uint32_t temp = 0;
+                memcpy(&temp, pager.pages_list[idx]+page_size-4, 4);
+                if (temp==0)
+                    {end=1; return;}
+                page_num = temp;
+                offset = 0;
+                continue;
+            }
+
+            row.data = new char[row.row_size];
+            memcpy(row.data, pager.pages_list[idx]+offset+4, row.row_size);
+            break;
+        }
+    }
+
+    void prevOnce(Pager &pager)
+    {
+        if (prev_page_num == 0) {end = 1; return;}
+
+        page_num = prev_page_num;
+        offset = prev_offset;
+
+        pager.checkPage(page_num);
+        uint32_t idx = pager.pages_index[page_num];
+
+        memcpy(&row, pager.pages_list[idx]+offset, 4);
+        row.data = new char[row.row_size];
+        memcpy(row.data, pager.pages_list[idx]+offset+4, row.row_size);        
     }
 };
 
@@ -424,33 +473,13 @@ void create_table(Pager &pager, EmptyList &empty_list, string s)
         // current last page.
         if (init) 
         {
-            uint32_t idx;
-            if (!pager.pages_index.count(iter.page_num))
-            {
-                fstream file("mydb.db", ios::in);
-                char* buffer = new char[page_size];
-                file.seekg(iter.page_num * page_size);
-                file.read(buffer, page_size);
-                file.close();
-                pager.pages_index[iter.page_num] = pager.pages_list.size();
-                pager.pages_list.emplace_back(buffer);
-                file.close();
-            }
-            idx = pager.pages_index[iter.page_num];
+            pager.checkPage(iter.page_num);
+            uint32_t idx = pager.pages_index[iter.page_num];
             memcpy(pager.pages_list[idx]+page_size-4, &page_num, 4);
         }
     }
 
-    if (!pager.pages_index.count(page_num))
-    {
-        pager.pages_index[page_num] = pager.pages_list.size();
-        char *temp = new char[page_size];
-        fstream file("mydb.db", ios::in);
-        file.seekg(page_num * page_size);
-        file.read(temp, page_size);
-        file.close();
-        pager.pages_list.emplace_back(temp);
-    }
+    pager.checkPage(page_num);
 
     cout << page_num << '\n';
     uint32_t idx = pager.pages_index[page_num];
@@ -465,6 +494,27 @@ void create_table(Pager &pager, EmptyList &empty_list, string s)
     pager.first_page.num_tables++;
 }
 
+void prtTable(MasterRow &mrow)
+{
+    cout << mrow.table_name << '\n';
+    uint32_t offset = 0;
+    for (uint32_t i = 0; i < mrow.num_col; i++)
+    {
+        uint32_t size;
+        memcpy(&size, mrow.names+offset, 4);
+        offset += 4;
+        cout << mrow.names+offset << ' ';
+        offset += size;
+
+        uint32_t temp;
+        memcpy(&temp, mrow.types+i*5, 1);
+        cout << temp << ' ';
+        memcpy(&temp, mrow.types+i*5+1, 4);
+        cout << temp << '\n';
+    }
+    cout << '\n';
+}
+
 void show_all_tables(Pager &pager)
 {
     mCursor iter;
@@ -474,25 +524,7 @@ void show_all_tables(Pager &pager)
     iter.init(1, 0, pager);
     while(iter.end != 1)
     {
-        cout << iter.mrow.table_name << '\n';
-
-        uint32_t offset = 0;
-        for (uint32_t i = 0; i < iter.mrow.num_col; i++)
-        {
-            uint32_t size;
-            memcpy(&size, iter.mrow.names+offset, 4);
-            offset += 4;
-            cout << iter.mrow.names+offset << ' ';
-            offset += size;
- 
-            uint32_t temp;
-            memcpy(&temp, iter.mrow.types+i*5, 1);
-            cout << temp << ' ';
-            memcpy(&temp, iter.mrow.types+i*5+1, 4);
-            cout << temp << '\n';
-        }
-        cout << '\n';
-
+        prtTable(iter.mrow);
         iter.advance(pager);
     }
 }
@@ -520,19 +552,35 @@ pair<uint32_t, uint32_t> find_table(string table_name, Pager &pager)
     return {page_num, offset};
 }
 
-GeneralRow serialize_row(string s, string table_name, Pager &pager)
+GeneralRow insert(string s, string table_name, Pager &pager, EmptyList &empty_list)
 {
     pair<uint32_t, uint32_t> temp = find_table(table_name, pager);
-    if (temp.first == 0) {cout << "No such table\n"; return;}
+
+    GeneralRow row;
+    if (temp.first == 0) {cout << "No such table\n"; row.row_size = 0; return row;}
+
     mCursor iter;
     iter.init(temp.first, temp.second, pager);
 
-    GeneralRow row;
+    uint32_t page_num = 0, offset = 0;
+
+    gCursor g_iter;
+    bool init = 0;
+    if (iter.mrow.first_page > 0)
+    {
+        g_iter.init(iter.mrow.first_page, 0, iter.mrow, pager);
+        init = 1;
+    }
+
+    while (init)
+    {
+        
+    }
+
     row.read_row(s, iter.mrow);
 
     return row;
 }
-
 
 int main()
 {
@@ -542,7 +590,6 @@ int main()
     EmptyList empty_list;
     empty_list.init(pager.first_page.num_pages, page_size);
     
-
     MasterRow mrow;
 
     string input;
@@ -579,7 +626,7 @@ int main()
 
             string s = "";
             getline(cin, s);
-            serialize_row(s, table_name, pager);
+            insert(s, table_name, pager, empty_list);
         }
 
         else if (input == "find")
@@ -589,7 +636,6 @@ int main()
             cout << P.first << ' ' << P.second << '\n';
         }
     }
-
 
     pager.first_page.num_pages = empty_list.num_pages;
     empty_list.close();
