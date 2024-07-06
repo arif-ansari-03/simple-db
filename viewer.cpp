@@ -45,4 +45,11 @@ int main()
         prt(start, row_size);
         start += row_size;
     }
+
+    int j = 0;
+    fstream file("mydb.db", ios::in);
+    char* b = new char[2];
+    b[0] = b[1] = 0;
+    while (file.read(b, 1)) j++;
+    cout << j << '\n';
 }

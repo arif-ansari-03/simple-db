@@ -143,96 +143,6 @@ struct MasterRow
     }
 };
 
-
-struct GeneralRow
-{
-    vector<uint32_t> col_type;
-    vector<uint32_t> col_offset;
-    char* data;
-    uint32_t row_size;
-
-    void readGenRow(string s)
-    {
-        stringstream ss(s);
-        for (uint32_t i = 0; i < col_type.size(); i++)
-        {
-            uint32_t col_size;
-            if (i+1 < col_type.size()) col_size = col_offset[i+1]-col_offset[i];
-            else col_size = row_size - col_offset[i];
-
-            if (col_type[i]==0)
-            {
-                string temp;
-                ss >> temp;
-                if ((int)temp.length()>((int)col_size-1))
-                {
-                    cout << "String too big\n";
-                    temp = "";
-                }
-                memcpy(data+col_offset[i], temp.c_str(), col_size);
-            }
-            else if (col_type[i]==1)
-            {
-                int temp;
-                ss >> temp;
-            }
-            else if (col_type[i]==2)
-            {
-                float temp;
-                ss >> temp;
-                memcpy(data+col_offset[i], &temp, col_size);
-            }
-            else
-            {
-                cout << "invalid column type\n";
-            }
-        }
-        cout << '\n';
-    }
-
-    void printGenRow()
-    {
-        for (uint32_t i = 0; i < col_type.size(); i++)
-        {
-            uint32_t col_size;
-            if (i+1 < col_type.size()) col_size = col_offset[i+1]-col_offset[i];
-            else col_size = row_size - col_offset[i];
-
-            if (col_type[i]==0)
-            {
-                char *buffer = new char[col_size];
-                memcpy(buffer, data+col_offset[i], col_size);
-                cout << buffer << ' ';
-            }
-            else if (col_type[i]==1)
-            {
-                int temp;
-                memcpy(&temp, data+col_offset[i], col_size);
-                cout << temp << ' ';
-            }
-            else if (col_type[i]==2)
-            {
-                float temp;
-                memcpy(&temp, data+col_offset[i], col_size);
-                cout << temp << ' ';
-            }
-            else
-            {
-                cout << "invalid column type\n";
-            }
-        }
-        cout << '\n';
-    }
-};
-
-struct Row
-{
-    uint32_t id;
-    char user[200];
-    uint32_t next_page;
-    uint32_t offset;
-};
-
 struct First_page
 {
     uint32_t num_pages;
@@ -282,6 +192,75 @@ struct Pager
     }
 };
 
+struct GeneralRow
+{
+    uint32_t row_size;
+    char* data;
+
+    void read_row(string s, MasterRow &mrow)
+    {
+        stringstream ss(s);
+        vector<string> data_list;
+        
+        string input;
+
+        while (ss >> input) data_list.emplace_back(input);
+        if (data_list.size()!=mrow.num_col) {cout << "Number of columns don't match\n";return;}
+
+        row_size = 0;
+        uint32_t temp;
+        for (uint32_t i = 0; i < mrow.num_col; i++)
+        {
+            temp = 0;
+            memcpy(&temp, mrow.types+5*i, 1);
+            if (temp == 0)
+            {
+                memcpy(&temp, mrow.types+5*i+1, 4);
+                if (temp < 1+data_list[i].length())
+                {
+                    cout << "\"" << data_list[i] << "\" is too big\n";
+                    return;
+                }
+                row_size += 4; // to store length of string (which will include the last null byte)
+                row_size += 1+data_list[i].length();
+            }
+            else if (temp == 1 || temp == 2) row_size += 4;
+            else { cout << "Invalid datatype.\n"; return; }
+        }
+
+        data = new char[row_size];
+        // is there anything other than memset for this?
+        for (uint32_t i = 0; i < row_size; i++) data[i] = 0;
+
+        uint32_t offset = 0;
+
+        for (uint32_t i = 0; i < mrow.num_col; i++)
+        {
+            temp = 0;
+            memcpy(&temp, mrow.types+5*i, 1);
+            if (temp==0)
+            {
+                temp = 1+data_list[i].length();
+                memcpy(data+offset, &temp, 4);
+                offset += 4;
+                strcpy(data+offset, data_list[i].c_str());
+                offset += 1+data_list[i].length();
+            }
+            else if (temp==1)
+            {
+                int a = stoi(data_list[i]);
+                memcpy(data+offset, &a, 4);
+                offset+=4;
+            }
+            else
+            {
+                float a = stof(data_list[i]);
+                memcpy(data+offset, &a, 4);
+                offset+=4;
+            }
+        }
+    }
+};
 
 struct mCursor
 {
@@ -381,6 +360,22 @@ struct mCursor
         idx = pager.pages_index[page_num];
         memcpy(&mrow, pager.pages_list[idx]+offset, 56);
         mrow.read_row(pager.pages_list[idx], offset);
+    }
+};
+
+struct gCursor
+{
+    GeneralRow row;
+    MasterRow mrow;
+    uint32_t page_num;
+    uint32_t offset;
+    bool end;
+
+    void init(uint32_t pg_no, uint32_t ofst, MasterRow m_row, Pager &pager)
+    {
+        page_num = pg_no;
+        offset = ofst;
+        mrow = m_row;
     }
 };
 
@@ -489,7 +484,7 @@ void show_all_tables(Pager &pager)
             offset += 4;
             cout << iter.mrow.names+offset << ' ';
             offset += size;
-
+ 
             uint32_t temp;
             memcpy(&temp, iter.mrow.types+i*5, 1);
             cout << temp << ' ';
@@ -502,47 +497,42 @@ void show_all_tables(Pager &pager)
     }
 }
 
-void write_row(uint32_t page_num, uint32_t offset, Row &row, Pager &pager)
+pair<uint32_t, uint32_t> find_table(string table_name, Pager &pager)
 {
-    if (!pager.pages_index.count(page_num))
+    bool found = 0;
+    uint32_t page_num = 0, offset = 0;
+
+    if (pager.first_page.num_tables>0)
     {
-        pager.pages_index[page_num] = pager.pages_list.size();
-        char *temp = new char[page_size];
-        pager.pages_list.emplace_back(temp);
-
-        fstream file("mydb.db", ios::in);
-        file.seekg(page_num * page_size);
-        file.read(temp, page_size);
-        file.close();
+        mCursor iter;
+        iter.init(1, 0, pager);
+        while (!iter.end)
+        {
+            if (iter.mrow.table_name == table_name)
+            {
+                page_num = iter.page_num;
+                offset = iter.offset;
+                break;
+            }
+            iter.advance(pager); 
+        }
     }
-
-    uint32_t idx = pager.pages_index[page_num];
-
-    memcpy(pager.pages_list[idx]+offset, &row, sizeof(Row));
+    return {page_num, offset};
 }
 
-void read_row(uint32_t page_num, uint32_t offset, Row &row, Pager &pager)
+GeneralRow serialize_row(string s, string table_name, Pager &pager)
 {
-    if (!pager.pages_index.count(page_num))
-    {
-        pager.pages_index[page_num] = pager.pages_list.size();
-        char *temp = new char[page_size];
-        pager.pages_list.emplace_back(temp);
+    pair<uint32_t, uint32_t> temp = find_table(table_name, pager);
+    if (temp.first == 0) {cout << "No such table\n"; return;}
+    mCursor iter;
+    iter.init(temp.first, temp.second, pager);
 
-        fstream file("mydb.db", ios::in);
-        file.seekg(page_num * page_size);
-        file.read(temp, page_size);
-        file.close();
-    }
+    GeneralRow row;
+    row.read_row(s, iter.mrow);
 
-    uint32_t idx = pager.pages_index[page_num];
-    memcpy(&row, pager.pages_list[idx]+offset, sizeof(Row));
+    return row;
 }
 
-void insert()
-{
-
-}
 
 int main()
 {
@@ -553,7 +543,6 @@ int main()
     empty_list.init(pager.first_page.num_pages, page_size);
     
 
-    Row row;
     MasterRow mrow;
 
     string input;
@@ -568,25 +557,6 @@ int main()
             break;
         }
 
-        // if (input == "insert")
-        // {
-        //     cin >> row.id;
-        //     string temp;
-        //     cin >> temp;
-        //     strcpy(row.user, temp.c_str());
-
-        //     row.next_page = 0;
-        //     row.offset = 0;
-
-        //     write_row(2, 0, row, pager);
-        // }
-
-        // else if (input == "select")
-        // {
-        //     read_row(1, 0, row, pager);
-        //     cout << row.id << ' ' << row.user << '\n';
-        // }
-
         if (input == "show")
         {
             cin >> input;
@@ -599,6 +569,24 @@ int main()
             string s = "";
             getline(cin, s);
             create_table(pager, empty_list, s);
+        }
+
+        else if (input == "insert")
+        {
+            cin >> input; // read "into"
+            string table_name;
+            cin >> table_name;
+
+            string s = "";
+            getline(cin, s);
+            serialize_row(s, table_name, pager);
+        }
+
+        else if (input == "find")
+        {
+            cin >> input;
+            pair<uint32_t, uint32_t> P = find_table(input, pager);
+            cout << P.first << ' ' << P.second << '\n';
         }
     }
 
