@@ -47,6 +47,18 @@ string to_bits(int a)
 
 uint32_t page_size = 400;
 
+void prt_page(char *page)
+{
+    for (int i = 0; i < page_size/10; i++)
+    {
+        for (int j = 0; j < 10; j++)
+        {
+            cout << to_bits(page[i*10+j]) << ' ';
+        }
+        cout << '\n';
+    }
+}
+
 struct MasterRow
 {
     char table_name[32];
@@ -183,12 +195,12 @@ struct Pager
         file.close();
 
         pages_index[page_num] = pages_list.size();
-        pages_list.emplace_back(page_num);
+        pages_list.emplace_back(buffer);
     }
 
     void close()
     {
-        fstream file("mydb.db", ios::out|ios::in);
+        fstream file("mydb.db", ios::out|ios::in|ios::binary);
 
         buffer = new char[sizeof(First_page)];
         memcpy(buffer, &first_page, sizeof(First_page));
@@ -198,6 +210,7 @@ struct Pager
         for (auto &[page_num, page_idx] : pages_index)
         {
             if (pages_list[page_idx] == NULL) continue;
+
             file.seekp(page_num * page_size);
             file.write(pages_list[page_idx], page_size);
             delete pages_list[page_idx];
@@ -211,7 +224,7 @@ struct GeneralRow
     uint32_t row_size;
     char* data;
 
-    void read_row(string s, MasterRow &mrow)
+    int read_row(string s, MasterRow &mrow)
     {
         stringstream ss(s);
         vector<string> data_list;
@@ -219,7 +232,7 @@ struct GeneralRow
         string input;
 
         while (ss >> input) data_list.emplace_back(input);
-        if (data_list.size()!=mrow.num_col) {cout << "Number of columns don't match\n";return;}
+        if (data_list.size()!=mrow.num_col) {cout << "Number of columns don't match\n";return -1;}
 
         row_size = 0;
         uint32_t temp;
@@ -233,13 +246,13 @@ struct GeneralRow
                 if (temp < 1+data_list[i].length())
                 {
                     cout << "\"" << data_list[i] << "\" is too big\n";
-                    return;
+                    return -1;
                 }
                 row_size += 4; // to store length of string (which will include the last null byte)
                 row_size += 1+data_list[i].length();
             }
             else if (temp == 1 || temp == 2) row_size += 4;
-            else { cout << "Invalid datatype.\n"; return; }
+            else { cout << "Invalid datatype.\n"; return -1; }
         }
 
         data = new char[row_size];
@@ -273,6 +286,7 @@ struct GeneralRow
                 offset+=4;
             }
         }
+        return 0;
     }
 };
 
@@ -343,6 +357,13 @@ struct mCursor
         memcpy(&mrow, pager.pages_list[idx]+offset, 56);
         mrow.read_row(pager.pages_list[idx], offset);
     }
+
+    void updateFirstPage(Pager &pager)
+    {
+        pager.checkPage(page_num);
+        uint32_t idx = pager.pages_index[page_num];
+        memcpy(pager.pages_list[idx]+offset+36, &mrow.first_page, 4);
+    }
 };
 
 struct gCursor
@@ -355,7 +376,7 @@ struct gCursor
     uint32_t prev_offset;
     bool end;
 
-    void init(uint32_t pg_no, uint32_t ofst, MasterRow m_row, Pager &pager)
+    void init(uint32_t pg_no, uint32_t ofst, MasterRow &m_row, Pager &pager)
     {
         prev_page_num = 0;
         prev_offset = 0;
@@ -388,7 +409,7 @@ struct gCursor
             offset += row.row_size;
             offset += 4;
 
-            delete row.data;
+            // delete row.data;
 
             pager.checkPage(page_num);
             uint32_t idx = pager.pages_index[page_num];
@@ -403,6 +424,7 @@ struct gCursor
                     {end=1; return;}
                 page_num = temp;
                 offset = 0;
+                offset -= 4;
                 continue;
             }
 
@@ -425,6 +447,39 @@ struct gCursor
         memcpy(&row, pager.pages_list[idx]+offset, 4);
         row.data = new char[row.row_size];
         memcpy(row.data, pager.pages_list[idx]+offset+4, row.row_size);        
+    }
+
+    void prt_row()
+    {
+        uint32_t ofst = 0;
+        for (uint32_t i = 0; i < mrow.num_col; i++)
+        {
+            uint32_t temp = 0;
+            memcpy(&temp, mrow.types+5*i, 1);
+            if (temp==0)
+            {
+                char *s;
+                strcpy(s, row.data+ofst+4);
+                cout << s << ' ';
+                memcpy(&temp, row.data+ofst, 4);
+                ofst += temp+4;
+            }
+            else if (temp==1)
+            {
+                int temp_;
+                memcpy(&temp_, row.data+ofst, 4);
+                cout << temp_ << ' ';
+                ofst += 4;
+            }
+            else if (temp==2)
+            {
+                float temp_;
+                memcpy(&temp_, row.data+ofst, 4);
+                cout << temp_ << ' ';
+                ofst += 4;
+            }
+        }
+        cout << '\n';
     }
 };
 
@@ -552,15 +607,17 @@ pair<uint32_t, uint32_t> find_table(string table_name, Pager &pager)
     return {page_num, offset};
 }
 
-GeneralRow insert(string s, string table_name, Pager &pager, EmptyList &empty_list)
+int insert(string s, string table_name, Pager &pager, EmptyList &empty_list)
 {
     pair<uint32_t, uint32_t> temp = find_table(table_name, pager);
 
     GeneralRow row;
-    if (temp.first == 0) {cout << "No such table\n"; row.row_size = 0; return row;}
+    if (temp.first == 0) {cout << "No such table\n"; row.row_size = 0; return -1;}
 
     mCursor iter;
     iter.init(temp.first, temp.second, pager);
+    int ret = row.read_row(s, iter.mrow);
+    if (ret != 0) {cout << "Invalid values\n"; row.row_size = 0; return -1;}
 
     uint32_t page_num = 0, offset = 0;
 
@@ -574,12 +631,88 @@ GeneralRow insert(string s, string table_name, Pager &pager, EmptyList &empty_li
 
     while (init)
     {
-        
+        uint32_t mem_used = 0;
+        pager.checkPage(g_iter.page_num);
+        uint32_t idx = pager.pages_index[g_iter.page_num];
+
+        memcpy(&mem_used, pager.pages_list[idx]+page_size-8, 4);
+        mem_used += 12;
+
+        if (page_size-mem_used >= row.row_size+4)
+        {
+            uint32_t temp = g_iter.page_num;
+            while (!g_iter.end && temp == g_iter.page_num)
+                g_iter.advance(pager);
+            g_iter.prevOnce(pager);
+            page_num = g_iter.page_num;
+            offset = g_iter.offset + g_iter.row.row_size+4;
+            break;
+        }
+
+        uint32_t temp = g_iter.page_num;
+        while (!g_iter.end && g_iter.page_num==temp)
+            g_iter.advance(pager);
+        if (g_iter.end) break;
     }
 
-    row.read_row(s, iter.mrow);
+    if (page_num==0)
+    {
+        page_num = empty_list.find_page();
+        offset = 0;
+        if (init)
+        {
+            g_iter.prevOnce(pager);
+            pager.checkPage(g_iter.page_num);
+            uint32_t idx = pager.pages_index[g_iter.page_num];
+            memcpy(pager.pages_list[idx]+page_size-4, &page_num, 4);
+            uint32_t temp = 0;
+            memcpy(&temp, pager.pages_list[idx]+page_size-4, 4);
+            cout << "next page num: " << temp << '\n';
+        }
+        else
+        {
+            iter.mrow.first_page = page_num;
+            iter.updateFirstPage(pager);
+        }
+    }
 
-    return row;
+    
+
+    row.read_row(s, iter.mrow);
+    pager.checkPage(page_num);
+    uint32_t idx = pager.pages_index[page_num];
+    memcpy(pager.pages_list[idx]+offset, &row, 4);
+    memcpy(pager.pages_list[idx]+offset+4, row.data, row.row_size);
+
+    uint32_t temp_var = 0;
+    memcpy(&temp_var, pager.pages_list[idx]+page_size-8, 4);
+    temp_var += row.row_size + 4;
+    memcpy(pager.pages_list[idx]+page_size-8, &temp_var, 4);
+
+    return 0;
+}
+
+int select(string table_name, Pager &pager)
+{
+    pair<uint32_t, uint32_t> temp = find_table(table_name, pager);
+
+    GeneralRow row;
+    if (temp.first == 0) {cout << "No such table\n"; row.row_size = 0; return -1;}
+
+    mCursor iter;
+    iter.init(temp.first, temp.second, pager);
+    
+    cout << table_name << '\n';
+    if (!iter.mrow.first_page) return 0;
+    gCursor g_iter;
+    g_iter.init(iter.mrow.first_page, 0, iter.mrow, pager);
+    // return 0;
+    while (!g_iter.end)
+    {
+        g_iter.prt_row();
+        g_iter.advance(pager);
+    }
+    return 0;
 }
 
 int main()
@@ -628,12 +761,14 @@ int main()
             getline(cin, s);
             insert(s, table_name, pager, empty_list);
         }
-
-        else if (input == "find")
+        
+        else if (input == "select")
         {
-            cin >> input;
-            pair<uint32_t, uint32_t> P = find_table(input, pager);
-            cout << P.first << ' ' << P.second << '\n';
+            cin >> input; // read '*'
+            cin >> input; // read 'from'
+            string table_name;
+            cin >> table_name;
+            select(table_name, pager);
         }
     }
 

@@ -29,7 +29,10 @@ struct EmptyList
 
     void make_pages(uint32_t new_pages)
     {
-        fstream file("mydb.db", ios::in|ios::out|ios::ate);
+        // ios::ate will put the pointer to the last byte in the file instead of after it
+        // So using it will make one less byte than required.
+        fstream file("mydb.db", ios::in|ios::out);
+        file.seekp(num_pages * page_size);
 
         char* temp = new char[page_size];
         for (uint32_t i = 0; i < page_size; i++) temp[i] = 0;
