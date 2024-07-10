@@ -34,7 +34,7 @@ void prt(int start, int row_size)
 
 int main()
 {
-    int start = 1600;
+    int start = 1200;
     int rows = 40;
     int row_size = 10;
 

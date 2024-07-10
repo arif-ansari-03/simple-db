@@ -210,7 +210,7 @@ struct Pager
         for (auto &[page_num, page_idx] : pages_index)
         {
             if (pages_list[page_idx] == NULL) continue;
-
+            cout << page_num << '\n';
             file.seekp(page_num * page_size);
             file.write(pages_list[page_idx], page_size);
             delete pages_list[page_idx];
@@ -502,7 +502,11 @@ void create_table(Pager &pager, EmptyList &empty_list, string s)
         uint32_t mem_used;
         memcpy(&mem_used, pager.pages_list[idx]+(page_size-8), 4);
 
-        mem_used += 9;
+        // in every page of master table, last 12 bytes are:
+        // prev_page | total_size_used | next_page
+        // to mark end of data in the page, we leave 1 byte so 12 bytes are reserved
+        // and 1 more byte is to be left empty 
+        mem_used += 13;
 
         if (page_size-mem_used>=mrow.row_size())
         {
@@ -531,6 +535,10 @@ void create_table(Pager &pager, EmptyList &empty_list, string s)
             pager.checkPage(iter.page_num);
             uint32_t idx = pager.pages_index[iter.page_num];
             memcpy(pager.pages_list[idx]+page_size-4, &page_num, 4);
+
+            pager.checkPage(page_num);
+            idx = pager.pages_index[page_num];
+            memcpy(pager.pages_list[idx]+page_size-12, &iter.page_num, 4);
         }
     }
 
@@ -561,7 +569,7 @@ void prtTable(MasterRow &mrow)
         cout << mrow.names+offset << ' ';
         offset += size;
 
-        uint32_t temp;
+        uint32_t temp = 0;
         memcpy(&temp, mrow.types+i*5, 1);
         cout << temp << ' ';
         memcpy(&temp, mrow.types+i*5+1, 4);
@@ -597,6 +605,8 @@ pair<uint32_t, uint32_t> find_table(string table_name, Pager &pager)
         {
             if (iter.mrow.table_name == table_name)
             {
+                cout << iter.mrow.table_name << ' ' << table_name << '\n';
+                cout << iter.page_num << ' ' << iter.offset << '\n';
                 page_num = iter.page_num;
                 offset = iter.offset;
                 break;
@@ -605,6 +615,60 @@ pair<uint32_t, uint32_t> find_table(string table_name, Pager &pager)
         }
     }
     return {page_num, offset};
+}
+
+void drop_table(string table_name, Pager &pager, EmptyList &empty_list)
+{
+    pair<uint32_t, uint32_t> table_loc = find_table(table_name, pager);
+    if (table_loc.first == 0) return;
+
+    pager.checkPage(table_loc.first);
+    uint32_t idx = pager.pages_index[table_loc.first];
+
+    uint32_t mem_used = 0;
+    memcpy(&mem_used, pager.pages_list[idx]+page_size-8, 4);
+    mCursor iter;
+    iter.init(table_loc.first, table_loc.second, pager);
+    mem_used -= iter.mrow.row_size();
+    memcpy(pager.pages_list[idx]+page_size-8, &mem_used, 4);
+    cout << mem_used << '\n';
+
+    if (mem_used != 0)
+    {
+        uint32_t offset = table_loc.second;
+        uint32_t row_size = iter.mrow.row_size();
+        while (offset + row_size + 12 < page_size)
+        {
+            pager.pages_list[idx][offset] = pager.pages_list[idx][offset+row_size];
+            offset++;
+        }
+    }
+    else
+    {
+        uint32_t prev_page_num = 0, next_page_num = 0;
+        memcpy(&prev_page_num, pager.pages_list[idx]+page_size-12, 4);
+        memcpy(&next_page_num, pager.pages_list[idx]+page_size-4, 4);
+
+        if (prev_page_num != 0)
+        {
+            pager.checkPage(prev_page_num);
+            idx = pager.pages_index[prev_page_num];
+            memcpy(pager.pages_list[idx]+page_size-4, &next_page_num, 4);
+        }
+
+        if (next_page_num != 0)
+        {
+            pager.checkPage(next_page_num);
+            idx = pager.pages_index[next_page_num];
+            memcpy(pager.pages_list[idx]+page_size-12, &prev_page_num, 4);
+        }
+
+        idx = pager.pages_index[table_loc.first];
+        for (uint32_t i = 0; i < page_size; i++)
+            pager.pages_list[idx][i] = 0;
+        empty_list.delete_page(table_loc.first);
+    }
+    pager.first_page.num_tables--;
 }
 
 int insert(string s, string table_name, Pager &pager, EmptyList &empty_list)
@@ -636,7 +700,13 @@ int insert(string s, string table_name, Pager &pager, EmptyList &empty_list)
         uint32_t idx = pager.pages_index[g_iter.page_num];
 
         memcpy(&mem_used, pager.pages_list[idx]+page_size-8, 4);
-        mem_used += 12;
+
+        // the last 3 bytes are
+        // prev_page | mem_used_by_rows | next_page
+        // we have to leave 4 more bytes to mark end of data
+        // this could be reduced later on, since row_size will at max be 4000, so
+        // row_size can fit in less than one byte even.
+        mem_used += 16;
 
         if (page_size-mem_used >= row.row_size+4)
         {
@@ -661,13 +731,18 @@ int insert(string s, string table_name, Pager &pager, EmptyList &empty_list)
         offset = 0;
         if (init)
         {
-            g_iter.prevOnce(pager);
+            g_iter.prevOnce(pager); // is there a need to do prevOnce() ? 
+                                    // because doesnt the g_iter.page_num remain same if reached end?
             pager.checkPage(g_iter.page_num);
             uint32_t idx = pager.pages_index[g_iter.page_num];
             memcpy(pager.pages_list[idx]+page_size-4, &page_num, 4);
             uint32_t temp = 0;
             memcpy(&temp, pager.pages_list[idx]+page_size-4, 4);
             cout << "next page num: " << temp << '\n';
+
+            pager.checkPage(page_num);
+            idx = pager.pages_index[page_num];
+            memcpy(pager.pages_list[idx]+page_size-12, &g_iter.page_num, 4);
         }
         else
         {
@@ -675,8 +750,6 @@ int insert(string s, string table_name, Pager &pager, EmptyList &empty_list)
             iter.updateFirstPage(pager);
         }
     }
-
-    
 
     row.read_row(s, iter.mrow);
     pager.checkPage(page_num);
@@ -749,6 +822,13 @@ int main()
             string s = "";
             getline(cin, s);
             create_table(pager, empty_list, s);
+        }
+
+        else if (input == "drop")
+        {
+            cin >> input; // read "table"
+            cin >> input;
+            drop_table(input, pager, empty_list);
         }
 
         else if (input == "insert")
