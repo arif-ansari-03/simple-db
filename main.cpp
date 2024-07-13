@@ -495,6 +495,7 @@ void create_table(Pager &pager, EmptyList &empty_list, string s)
     mCursor iter;
     bool init = 0;
     if (pager.first_page.num_tables>0) {iter.init(1, 0, pager); init = 1;}
+    else page_num = 1;
 
     while (init)
     {
@@ -617,6 +618,24 @@ pair<uint32_t, uint32_t> find_table(string table_name, Pager &pager)
     return {page_num, offset};
 }
 
+void delete_all_rows(uint32_t first_page, MasterRow &mrow, Pager &pager, EmptyList &empty_list)
+{
+    gCursor g_iter;
+    g_iter.init(first_page, 0, mrow, pager);
+
+    while (!g_iter.end)
+    {
+        uint32_t pg_no = g_iter.page_num;
+        while (!g_iter.end && pg_no == g_iter.page_num)
+            g_iter.advance(pager); 
+        pager.checkPage(pg_no);
+        uint32_t idx = pager.pages_index[pg_no];
+        for (uint32_t i = 0; i < page_size; i++)
+            pager.pages_list[idx][i] = 0;
+        empty_list.delete_page(pg_no);            
+    }
+}
+
 void drop_table(string table_name, Pager &pager, EmptyList &empty_list)
 {
     pair<uint32_t, uint32_t> table_loc = find_table(table_name, pager);
@@ -631,7 +650,22 @@ void drop_table(string table_name, Pager &pager, EmptyList &empty_list)
     iter.init(table_loc.first, table_loc.second, pager);
     mem_used -= iter.mrow.row_size();
     memcpy(pager.pages_list[idx]+page_size-8, &mem_used, 4);
-    cout << mem_used << '\n';
+
+    gCursor g_iter;
+    g_iter.init(iter.mrow.first_page, 0, iter.mrow, pager);
+    while (!g_iter.end)
+    {
+        uint32_t pg_no = g_iter.page_num;
+        while (!g_iter.end && g_iter.page_num == pg_no)
+            g_iter.advance(pager);
+        pager.checkPage(pg_no);
+
+        uint32_t idx = pager.pages_index[pg_no];
+        for (uint32_t i = 0; i < page_size; i++)
+            pager.pages_list[idx][i] = 0;
+        empty_list.delete_page(pg_no);
+        if (g_iter.end) break;
+    }
 
     if (mem_used != 0)
     {
@@ -642,6 +676,8 @@ void drop_table(string table_name, Pager &pager, EmptyList &empty_list)
             pager.pages_list[idx][offset] = pager.pages_list[idx][offset+row_size];
             offset++;
         }
+        for (uint32_t i = 0; i < row_size; i++)
+            pager.pages_list[idx][offset+i] = 0;
     }
     else
     {
@@ -656,7 +692,7 @@ void drop_table(string table_name, Pager &pager, EmptyList &empty_list)
             memcpy(pager.pages_list[idx]+page_size-4, &next_page_num, 4);
         }
 
-        if (next_page_num != 0)
+        if (next_page_num != 0 && prev_page_num != 0)
         {
             pager.checkPage(next_page_num);
             idx = pager.pages_index[next_page_num];
@@ -664,11 +700,74 @@ void drop_table(string table_name, Pager &pager, EmptyList &empty_list)
         }
 
         idx = pager.pages_index[table_loc.first];
-        for (uint32_t i = 0; i < page_size; i++)
+        for (uint32_t i = 0; i < page_size-12; i++)
             pager.pages_list[idx][i] = 0;
-        empty_list.delete_page(table_loc.first);
+        
+        if (prev_page_num != 0)
+        {
+            for (uint32_t i = 1; i <= 12; i++)
+                pager.pages_list[idx][page_size-i] = 0;
+            empty_list.delete_page(table_loc.first);
+        }
     }
     pager.first_page.num_tables--;
+}
+
+void delete_row(uint32_t page_num, uint32_t offset, MasterRow &mrow, Pager &pager, EmptyList &empty_list)
+{
+    gCursor g_iter;
+    g_iter.init(page_num, offset, mrow, pager);
+    if (g_iter.end) return;
+
+    pager.checkPage(page_num);
+    uint32_t idx = pager.pages_index[page_num];
+
+    uint32_t mem_used = 0;
+    memcpy(&mem_used, pager.pages_list[idx]+page_size-8, 4);
+
+    uint32_t row_size = g_iter.row.row_size + 4;
+    mem_used -= row_size;
+    memcpy(pager.pages_list[idx]-8, &mem_used, 4);
+
+    if (mem_used != 0)
+    {
+        uint32_t ofst = 0;
+        while (ofst + offset + row_size + 12 < page_size)
+        {
+            pager.pages_list[idx][offset+ofst] = pager.pages_list[idx][offset+ofst+row_size];
+            ofst++;
+        }
+        for (uint32_t i = 0; i < row_size; i++)
+            pager.pages_list[idx][offset+ofst+i] = 0;
+    }
+
+    if (mem_used == 0)
+    {
+        uint32_t prev_page_num = 0, next_page_num = 0;
+        memcpy(&prev_page_num, pager.pages_list[idx]+page_size-12, 4);
+        memcpy(&next_page_num, pager.pages_list[idx]+page_size-4, 4);
+
+        if (prev_page_num != 0)
+        {
+            pager.checkPage(prev_page_num);
+            idx = pager.pages_index[prev_page_num];
+            memcpy(pager.pages_list[idx]+page_size-4, &next_page_num, 4);
+        }
+
+        if (next_page_num != 0 && prev_page_num != 0)
+        {
+            pager.checkPage(next_page_num);
+            idx = pager.pages_index[next_page_num];
+            memcpy(pager.pages_list[idx]+page_size-12, &prev_page_num, 4);
+        }
+
+        if (prev_page_num != 0)
+        {
+            for (uint32_t i = 0; i < page_size; i++)
+                pager.pages_list[idx][i] = 0;
+            empty_list.delete_page(page_num);
+        }
+    }
 }
 
 int insert(string s, string table_name, Pager &pager, EmptyList &empty_list)
@@ -763,6 +862,18 @@ int insert(string s, string table_name, Pager &pager, EmptyList &empty_list)
     memcpy(pager.pages_list[idx]+page_size-8, &temp_var, 4);
 
     return 0;
+}
+
+pair<uint32_t, uint32_t> find_row(string table_name, char* data, Pager &pager)
+{
+    pair<uint32_t, uint32_t> temp = find_table(table_name, pager);
+
+    GeneralRow row;
+    if (temp.first == 0) {cout << "No such table\n"; row.row_size = 0; return {0,0};}
+
+    mCursor iter;
+    iter.init(temp.first, temp.second, pager);
+    
 }
 
 int select(string table_name, Pager &pager)
